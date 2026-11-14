@@ -1,0 +1,12 @@
+{
+  "monitor": 1,
+  "detect_interval_seconds": 5,
+  "fast_interval_seconds": 0.5,
+  "no_popup_interval_seconds": 2,
+  "resave_unchanged_after_seconds": 300,
+  "keep_frames": false,
+  "roi_upscale": 1.5,
+  "rescan_every": 3,
+  "market_keyword": "rynek",
+  "cities": ["Caerleon", "Bridgewatch", "Fort Sterling", "Lymhurst", "Martlock", "Thetford"]
+}
