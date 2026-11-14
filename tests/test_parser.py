@@ -82,3 +82,25 @@ def test_headings_glued_by_ocr_are_found():
         return {"text": t, "score": .9, "x0": x0, "x1": x1, "y0": cy - 12, "y1": cy + 12, "cx": (x0 + x1) / 2, "cy": cy}
     boxes = [b("Zleceniasprzedazy", 640, 807, 231), b("Zleceniakupna", 911, 1047, 232)]
     assert parser.find_columns(boxes, 849) is not None
+
+
+def test_item_types():
+    from albion_tracker.categories import classify
+    assert classify("Buty najemnika mistrza") == "Buty"
+    assert classify("Runa adepta") == "Runy, dusze, relikty"
+    assert classify("Tomisko wiedzy") == "Runy, dusze, relikty"
+    assert classify("Oswojony olbrzymi jelen adepta") == "Wierzchowce"
+    assert classify("Deski debowe") == "Surowce"
+    assert classify("Skrawki skor") == "Surowce"
+    assert classify("Coś zupełnie nowego") == "Inne"
+
+
+def test_tier_words():
+    from albion_tracker.categories import split_tier_word, classify
+    assert split_tier_word("Buty najemnika adepta") == ("Buty najemnika", 4)
+    assert split_tier_word("Hetm zotnierza nowicjusza") == ("Hetm zotnierza", 2)
+    assert split_tier_word("Buty najemnika wszechmistrza") == ("Buty najemnika", 7)
+    assert split_tier_word("Buty najemnika poczatkujacego") == ("Buty najemnika", 1)
+    assert split_tier_word("Deski debowe") == ("Deski debowe", None)
+    assert split_tier_word("Runa") == ("Runa", None)
+    assert classify("Hetm zotnierza adepta") == "Hełmy"

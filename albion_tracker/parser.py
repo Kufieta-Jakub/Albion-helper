@@ -121,7 +121,17 @@ def parse_price_rows(boxes: list[dict], columns: list[str]) -> list[dict]:
 # Geometria jest liczona wzgledem naglowkow kolumn, wiec dziala przy kazdej rozdzielczosci
 # i skali interfejsu. Jednostka c = odleglosc miedzy lewymi krawedziami obu naglowkow.
 # ---------------------------------------------------------------------------
-QUALITIES = ["normalna", "dobra", "wybitna", "doskonala", "arcydzielo"]
+QUALITIES = ["normalna", "dobra", "wybitna", "znakomita", "arcydzielo"]
+# Gra odmienia nazwe jakosci przez rodzaj przedmiotu ('Znakomity', 'Wybitny'...), wiec dopasowujemy po temacie slowa
+QUALITY_STEMS = {"norm": "normalna", "dobr": "dobra", "wybi": "wybitna", "znak": "znakomita", "arcy": "arcydzielo"}
+
+
+def match_quality(words) -> str:
+    for w in words:
+        w = w.strip(".,:;|[]()")
+        if w[:4] in QUALITY_STEMS:
+            return QUALITY_STEMS[w[:4]]
+    return next((q for q in QUALITIES if any(_ratio(w, q) >= 0.8 for w in words)), "")
 ROWS = 6                              # tyle ofert miesci sie w oknie bez przewijania
 FIRST_ROW, ROW_PITCH = 0.183, 0.0996  # srodek 1. wiersza i odstep wierszy (w c, od linii naglowkow)
 SELL_PRICE, BUY_PRICE, QTY = (0.155, 0.455), (0.064, 0.43), (0.44, 0.66)  # zakresy x komorek (w c)
@@ -184,7 +194,7 @@ def parse_popup_header(boxes: list[dict], u: float) -> dict | None:
     tier = int(m.group(1)) if m else None
     m = re.search(r"zakl\w*\W*(\d)", ftext)
     enchant = int(m.group(1)) if m else 0
-    quality = next((q for q in QUALITIES if any(_ratio(w, q) >= 0.8 for w in ftext.split())), "")
+    quality = match_quality(ftext.split())
     return {"name": name, "tier": tier, "enchantment": enchant, "quality": quality,
             "hy": hy, "c": c, "sx": s["x0"], "kx": k["x0"], "title": title}
 
@@ -216,8 +226,19 @@ def parse_filters(tier_text: str, ench_text: str, quality_text: str):
     m = re.search(r"(\d)", normalize(ench_text))
     ench = int(m.group(1)) if m else None
     qt = normalize(quality_text).split()
-    quality = next((q for q in QUALITIES if any(_ratio(w, q) >= 0.8 for w in qt)), "")
+    quality = match_quality(qt)
     return tier, ench, quality
+
+
+# Ikona przedmiotu (lewy gorny rog okienka): polozenie wzgledem lewej krawedzi naglowka "Zlecenia sprzedazy"
+# (sx) i linii naglowkow kolumn (hy), w jednostkach c.
+ICON_X = (-1.945, -1.64)
+ICON_Y = (-0.09, 0.19)
+
+
+def icon_box(info: dict) -> tuple:
+    c, sx, hy = info["c"], info["sx"], info["hy"]
+    return (int(sx + ICON_X[0] * c), int(hy + ICON_Y[0] * c), int(sx + ICON_X[1] * c), int(hy + ICON_Y[1] * c))
 
 
 def popup_regions(info: dict, size: tuple[int, int]) -> dict:

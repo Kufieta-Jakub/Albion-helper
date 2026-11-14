@@ -1,3 +1,4 @@
+import io
 import os
 import time
 from collections import Counter
@@ -6,6 +7,11 @@ from pathlib import Path
 
 import numpy as np
 from PIL import Image, ImageOps
+
+try:
+    import cv2
+except ImportError:   # bez OpenCV zostaje tylko wolna sciezka
+    cv2 = None
 
 from . import ocr, parser
 
@@ -22,6 +28,25 @@ def _shift(boxes, dx, dy):
 def _signature(img: Image.Image, region) -> np.ndarray:
     g = ImageOps.grayscale(img.crop(region))
     return np.asarray(g.resize((96, max(1, int(96 * g.height / g.width)))), dtype=np.int16)
+
+
+def _content_sig(img: Image.Image, info: dict) -> list:
+    """Odcisk tresci okienka: tytul z filtrami oraz tabele zlecen, w polowie rozdzielczosci.
+    Zmiana pojedynczej cyfry musi byc widoczna (dawna miniatura 96 px ja zacierala)."""
+    hy, c, sx, kx = info["hy"], info["c"], info["sx"], info["kx"]
+    regs = [(sx - 2.0 * c, hy - 0.12 * c, sx - 0.15 * c, hy + 0.38 * c),     # tytul + filtry
+            (sx - 0.05 * c, hy + 0.08 * c, kx + 0.9 * c, hy + 0.75 * c)]     # tabele zlecen
+    out = []
+    for x0, y0, x1, y1 in regs:
+        g = ImageOps.grayscale(img.crop((max(0, int(x0)), max(0, int(y0)), int(x1), int(y1))))
+        out.append(np.asarray(g.resize((max(1, g.width // 2), max(1, g.height // 2)), Image.BILINEAR), dtype=np.int16))
+    return out
+
+
+def _content_same(a: list | None, b: list | None) -> bool:
+    if not a or not b or any(x.shape != y.shape for x, y in zip(a, b)):
+        return False
+    return sum(int((np.abs(x - y) > 40).sum()) for x, y in zip(a, b)) < 4
 
 
 def _same(a: np.ndarray, b: np.ndarray, tol: float = 4.0) -> bool:
@@ -142,8 +167,13 @@ def read_orders(img: Image.Image, info: dict, timing: dict | None = None) -> dic
 
 
 def _title_sig(crop: Image.Image) -> np.ndarray:
-    g = ImageOps.grayscale(crop).resize((96, 12), Image.BILINEAR)
-    return np.asarray(g, dtype=np.int16)
+    return np.asarray(ImageOps.grayscale(crop), dtype=np.int16)    # w pelnej rozdzielczosci
+
+
+def _title_same(a: np.ndarray, b: np.ndarray) -> bool:
+    """Ten sam napis = praktycznie identyczne piksele. Dawna miniatura 96x12 uznawala za jedno
+    'Deski cedrowe' i 'Deski sosnowe', co dawalo bledna nazwe przy zmianie przedmiotu."""
+    return a.shape == b.shape and int((np.abs(a - b) > 40).sum()) < 4
 
 
 def read_title(img: Image.Image, info: dict, state: dict | None = None) -> str:
@@ -155,7 +185,7 @@ def read_title(img: Image.Image, info: dict, state: dict | None = None) -> str:
     base = img.crop((max(0, int(x0 - 4)), max(0, int(y0 - 4)), int(x1 + 4), int(y1 + 4)))
     sig = _title_sig(base)
     cached = state.get("title_cache")
-    if cached and float(np.abs(cached[0] - sig).mean()) < 8.0:
+    if cached and _title_same(cached[0], sig):
         return cached[1]
 
     crops = []
@@ -180,6 +210,70 @@ def read_title(img: Image.Image, info: dict, state: dict | None = None) -> str:
     names[name] += 1
     state["title_cache"] = (sig, name)
     return name
+
+
+def fast_info(img: Image.Image, last: dict, state: dict) -> dict | None:
+    """Okienko stoi w tym samym miejscu co poprzednio (pas naglowkow identyczny): zamiast OCR calego
+    paska czytamy tylko tytul i trzy pola filtrow. None = nie udalo sie, trzeba uzyc wolnej sciezki."""
+    c = last["c"]
+    f = parser.filter_specs(last)
+    canvas_w = int(max(f[k][1] - f[k][0] for k in ("tier", "ench", "quality")) * 3) + 20
+    crops = [_cell_image(img, f[k][0], f[k][1], f["cy"], 0.04 * c, canvas_w, 3, False)
+             for k in ("tier", "ench", "quality")]
+    texts = [t for t, _ in ocr.recognize(crops)]
+    tier, ench, quality = parser.parse_filters(*texts)
+    if tier is None or ench is None or not quality:
+        return None
+    x0, y0, x1, y1 = last["title"]
+    wide = (x0, y0, x0 + parser.TITLE_WIDTH * c, y1)
+    info = dict(last, tier=tier, enchantment=ench, quality=quality, title=wide)
+    info["name"] = read_title(img, info, state)
+    info["title"] = last["title"]
+    info["_named"] = True
+    return info
+
+
+_SEARCH_PAD = 40   # okienko stoi w stalym miejscu: sprawdzamy tylko male otoczenie zapamietanej pozycji
+
+
+def _gray(img: Image.Image, region=None) -> np.ndarray:
+    g = ImageOps.grayscale(img if region is None else img.crop(region))
+    return np.asarray(g)
+
+
+def _remember_head(img: Image.Image, info: dict, state: dict):
+    """Zapamietuje wyglad paska z naglowkami kolumn - wzorzec do szybkiego odnajdywania okienka."""
+    x0, y0, x1, y1 = parser.head_region(info)
+    state["head_tmpl"] = (_gray(img, (x0, y0, x1, y1)), (x0, y0))
+
+
+def _locate_popup(img: Image.Image, last: dict | None, state: dict) -> dict | None:
+    """Czy okienko przedmiotu jest otwarte w zapamietanym miejscu? Porownuje wzorzec paska z naglowkami
+    kolumn tylko w malym otoczeniu dawnej pozycji (kilka ms, bez OCR). Zwraca info (z ewentualnym
+    drobnym przesunieciem) albo None, gdy okienka tam nie ma."""
+    tm = state.get("head_tmpl")
+    if not last or not tm or cv2 is None:
+        return None
+    tmpl, (ox, oy) = tm
+    th, tw = tmpl.shape
+    W, H = img.size
+    x0, y0 = max(0, ox - _SEARCH_PAD), max(0, oy - _SEARCH_PAD)
+    x1, y1 = min(W, ox + tw + _SEARCH_PAD), min(H, oy + th + _SEARCH_PAD)
+    win = _gray(img, (x0, y0, x1, y1))
+    if win.shape[0] < th or win.shape[1] < tw:
+        return None
+    res = cv2.matchTemplate(win, tmpl, cv2.TM_CCOEFF_NORMED)
+    _, mx, _, loc = cv2.minMaxLoc(res)
+    if mx < 0.9:
+        return None
+    dx, dy = x0 + loc[0] - ox, y0 + loc[1] - oy
+    info = dict(last)
+    info["sx"] += dx
+    info["kx"] += dx
+    info["hy"] += dy
+    tx0, ty0, tx1, ty1 = last["title"]
+    info["title"] = (tx0 + dx, ty0 + dy, tx1 + dx, ty1 + dy)
+    return info
 
 
 def _header_region(box: dict, size) -> tuple:
@@ -212,12 +306,24 @@ def scan_once(img: Image.Image, cfg: dict, state: dict):
     # 1. Tryb szybki: okienko juz sledzimy - jesli obraz sie nie zmienil, nic nie robimy
     if state.get("info"):
         regions = parser.popup_regions(state["info"], img.size)
-        sig = _signature(img, regions["area"])
-        if state.get("sig") is not None and _same(sig, state["sig"]):
+        if _content_same(_content_sig(img, state["info"]), state.get("sig")):
             return "unchanged", None
-        info = parser.parse_popup_header(_crop_boxes(img, regions["header"], up), H)
+        moved = _locate_popup(img, state["info"], state)
+        if moved:
+            info = fast_info(img, moved, state)
+        if info is None:
+            info = parser.parse_popup_header(_crop_boxes(img, regions["header"], up), H)
         if info is None:
             state["info"] = state["sig"] = None   # okienko zniknelo
+
+    if info is None and state.get("known_city"):
+        moved = _locate_popup(img, state.get("last_info"), state)
+        if moved:
+            info = fast_info(img, moved, state)    # okienko wrocilo (moze w innym miejscu)
+            if info is not None:
+                state["city"] = state["known_city"]
+        if info is None and state.get("last_info"):
+            state["pmiss"] = state.get("pmiss", 0) + 1
 
     if info is None:
         state["ticks"] = state.get("ticks", 0) + 1
@@ -235,11 +341,14 @@ def scan_once(img: Image.Image, cfg: dict, state: dict):
             hb = parser.find_city_box(full_boxes, city) if city else None
             state["header_region"] = _header_region(hb, img.size) if hb else state.get("header_region")
         state["city"] = city
+        if city:
+            state["known_city"] = city
         if not city:
             return "no_market", None
 
         # 3. Czy otwarte jest okienko przedmiotu? Tani test w miejscu, gdzie ostatnio bylo
-        if state.get("last_info"):
+        if state.get("last_info") and state.get("pmiss", 0) % 4 == 3:
+            # okienka nie widac w zapamietanym miejscu od kilku sprawdzen: dopiero teraz (rzadko) kosztowny odczyt
             info = parser.parse_popup_header(
                 _crop_boxes(img, parser.popup_regions(state["last_info"], img.size)["header"], up), H)
         if info is None and full_boxes is None and not state.get("last_info"):
@@ -253,14 +362,30 @@ def scan_once(img: Image.Image, cfg: dict, state: dict):
     t = state.setdefault("timing", {})
     t["okno"] = time.time() - state.get("t_start", time.time())
     t0 = time.time()
-    info = dict(info, name=read_title(img, info, state))
+    if "_named" not in info:
+        info = dict(info, name=read_title(img, info, state))
     t["tytul"] = time.time() - t0
     orders = read_orders(img, info, t)
     state["info"] = state["last_info"] = info
-    state["sig"] = _signature(img, parser.popup_regions(info, img.size)["area"])
+    state["pmiss"] = 0
+    _remember_head(img, info, state)
+    state["sig"] = _content_sig(img, info)
     popup = {k: info[k] for k in ("name", "tier", "enchantment", "quality")}
     popup.update(orders)
+    popup["icon"] = icon_png(img, info)
     return ("ok" if orders["sell"] or orders["buy"] else "empty"), popup
+
+
+def icon_png(img: Image.Image, info: dict) -> bytes | None:
+    """Wycinek ikony przedmiotu z okienka (PNG) - zapisywany w bazie do wyswietlania w konsoli webowej."""
+    x0, y0, x1, y1 = parser.icon_box(info)
+    W, H = img.size
+    x0, y0, x1, y1 = max(0, x0), max(0, y0), min(W, x1), min(H, y1)
+    if x1 - x0 < 16 or y1 - y0 < 16:
+        return None
+    buf = io.BytesIO()
+    img.crop((x0, y0, x1, y1)).save(buf, format="PNG", optimize=True)
+    return buf.getvalue()
 
 
 def fingerprint(city: str, popup: dict) -> tuple:

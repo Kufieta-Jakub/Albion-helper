@@ -11,7 +11,20 @@ CREATE TABLE IF NOT EXISTS items (
     tier        SMALLINT NOT NULL DEFAULT 0,
     enchantment SMALLINT NOT NULL DEFAULT 0,
     quality     TEXT     NOT NULL DEFAULT '',
+    item_type   TEXT     NOT NULL DEFAULT '',
     UNIQUE (name, tier, enchantment, quality)
+);
+
+-- baza utworzona wczesniej nie miala kolumny typu przedmiotu
+ALTER TABLE items ADD COLUMN IF NOT EXISTS item_type TEXT NOT NULL DEFAULT '';
+
+-- Ikona przedmiotu wycieta z okienka gry (jedna na nazwe + tier)
+CREATE TABLE IF NOT EXISTS item_icons (
+    name        TEXT     NOT NULL,
+    tier        SMALLINT NOT NULL DEFAULT 0,
+    png         BYTEA    NOT NULL,
+    captured_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (name, tier)
 );
 
 CREATE TABLE IF NOT EXISTS market_prices (
@@ -36,7 +49,7 @@ ON CONFLICT (name) DO NOTHING;
 -- i najwyzsze zlecenie kupna.
 CREATE OR REPLACE VIEW latest_prices AS
 SELECT i.name AS item, i.tier, i.enchantment, i.quality, c.name AS city,
-       p.order_type, p.unit_price, p.quantity, p.captured_at
+       p.order_type, p.unit_price, p.quantity, p.captured_at, i.item_type
 FROM (
     SELECT DISTINCT ON (item_id, city_id, order_type) *
     FROM (

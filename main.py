@@ -38,6 +38,7 @@ def cmd_run(args):
     if args.fast:
         cfg["fast_interval_seconds"] = args.fast
     holder = {"conn": db.connect()}
+    db.init_db(holder["conn"])   # tworzy/uzupelnia tabele (bezpieczne przy kazdym starcie)
 
     def save(city, popup):
         try:
