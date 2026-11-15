@@ -23,7 +23,7 @@ QUALITY_ORDER = ["", "normalna", "dobra", "wybitna", "znakomita", "arcydzielo"]
 LATEST_COLS = ["item", "tier", "enchantment", "quality", "city", "order_type", "unit_price", "quantity",
                "captured_at", "item_type"]
 
-# Kolory miast (jak w grze): tlo, tekst. Kolejnosc = kolejnosc plakietek na kafelku.
+
 CITY_STYLE = {
     "Lymhurst": ("#3f7d20", "#ffffff"),       # zielony
     "Bridgewatch": ("#d9731b", "#ffffff"),    # pomaranczowy

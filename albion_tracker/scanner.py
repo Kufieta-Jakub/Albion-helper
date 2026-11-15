@@ -207,7 +207,7 @@ def read_title(img: Image.Image, info: dict, state: dict | None = None) -> str:
             if SequenceMatcher(None, name, known).ratio() >= 0.9:
                 name = known
                 break
-    names[name] += 1
+    state["cand"] = name              # do licznika znanych nazw trafi dopiero po potwierdzeniu (run_loop)
     state["title_cache"] = (sig, name)
     return name
 
@@ -431,6 +431,20 @@ def run_loop(cfg: dict, grab, save, log=print, once: bool = False):
             if status in msgs:
                 log(msgs[status])
             prev_status = status
+
+        if status in ("ok", "empty") and state.get("info") and not once:
+            # potwierdzenie: kolejna klatka po chwili musi byc taka sama (gra mogla jeszcze przerysowywac okienko,
+            # np. nowy tytul ze starymi cenami). Jesli sie rozni - odrzucamy odczyt i czytamy od nowa.
+            time.sleep(cfg.get("confirm_delay_seconds", 0.15))
+            img2 = grab()
+            if not _content_same(_content_sig(img2, state["info"]), state.get("sig")):
+                state["sig"] = None
+                if cfg.get("debug_unstable"):
+                    log("(okienko jeszcze sie zmienia - odczyt odrzucony, czytam ponownie)")
+                time.sleep(cfg.get("confirm_delay_seconds", 0.15))
+                continue
+            if popup and popup.get("name"):
+                state.setdefault("names", Counter())[popup["name"]] += 1
 
         if status == "ok":
             fp = fingerprint(state["city"], popup)
